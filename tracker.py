@@ -32,11 +32,14 @@ def create_session():
         scraper = cloudscraper.create_scraper(
             browser={"browser": "chrome", "platform": "windows", "mobile": False}
         )
+        # Brotli sıkıştırmayı devre dışı bırak — decode sorunu önlenir
+        scraper.headers["Accept-Encoding"] = "gzip, deflate"
         return scraper
     else:
         print("[BİLGİ] requests kullanılıyor (cloudscraper yüklü değil).")
         session = requests.Session()
         session.headers.update(HEADERS)
+        session.headers["Accept-Encoding"] = "gzip, deflate"
         return session
 
 
@@ -56,7 +59,6 @@ HEADERS = {
     ),
     "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
     "Referer": "https://forum.donanimarsivi.com/",
 }
