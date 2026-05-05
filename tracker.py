@@ -172,6 +172,9 @@ def fetch_via_html(session, pages=PAGES_TO_SCAN):
             continue
 
         print(f"[DEBUG] Sayfa boyutu: {len(resp.text)} karakter")
+        print(f"[DEBUG] İlk 500 karakter:")
+        print(resp.text[:500])
+        print(f"[DEBUG] ─────────────────────────────")
 
         soup = BeautifulSoup(resp.text, "html.parser")
 
