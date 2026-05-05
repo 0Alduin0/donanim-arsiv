@@ -1,0 +1,45 @@
+name: Fırsat Takipçisi
+
+on:
+  # Her 10 dakikada bir çalış
+  schedule:
+    - cron: '*/10 * * * *'
+  
+  # Manuel tetikleme
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tracker
+        env:
+          CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python tracker.py
+
+      # seen_topics.json'u commit et ki aynı konuyu tekrar bildirmesin
+      - name: Save seen topics
+        run: |
+          git config --global user.name "Firsat Bot"
+          git config --global user.email "bot@tracker.local"
+          git add seen_topics.json
+          git diff --staged --quiet || git commit -m "update seen topics [skip ci]"
+          git push

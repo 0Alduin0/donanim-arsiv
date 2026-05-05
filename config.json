@@ -1,0 +1,63 @@
+{
+  "callmebot_phone": "",
+  "callmebot_apikey": "",
+
+  "telegram_bot_token": "",
+  "telegram_chat_id": "",
+
+  "keywords": [
+    "RTX 5070",
+    "RTX 5060",
+    "RTX 4070",
+    "RTX 4060",
+    "RX 9070",
+    "RX 7800",
+    "RX 7700",
+    "ekran kartı",
+    "GPU",
+
+    "Ryzen 7 9800X3D",
+    "Ryzen 7 7800X3D",
+    "Ryzen 5 7600",
+    "Ryzen 5 9600",
+    "14400F",
+    "14600K",
+    "Core Ultra",
+    "işlemci",
+    "CPU",
+
+    "DDR5",
+    "DDR4",
+    "32GB",
+    "48GB",
+    "RAM",
+    "CUDIMM",
+
+    "NVMe",
+    "SSD",
+    "M.2",
+    "1TB",
+    "2TB",
+    "Samsung 990",
+    "WD Black",
+
+    "PSU",
+    "güç kaynağı",
+    "850W",
+    "750W",
+    "1000W",
+    "kasa",
+    "ATX"
+  ],
+
+  "_NOTLAR": {
+    "aciklama": "Yukarıdaki keywords listesine istediğin parça/model/marka ekle/çıkar.",
+    "ornek_ekstra": [
+      "MSI MAG",
+      "Corsair",
+      "be quiet",
+      "NZXT",
+      "Cooler Master"
+    ]
+  }
+}
