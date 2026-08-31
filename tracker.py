@@ -44,6 +44,8 @@ def create_session():
 
 
 # ── Ayarlar ──────────────────────────────────────────────────────────
+IS_DEBUG = os.environ.get("DEBUG", "false").lower() in ("true", "1", "yes")
+
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
 SEEN_FILE = os.path.join(os.path.dirname(__file__), "seen_topics.json")
 
@@ -173,27 +175,31 @@ def fetch_via_html(session, pages=PAGES_TO_SCAN):
             print(f"[HATA] Sayfa alınamadı: {e}")
             continue
 
-        print(f"[DEBUG] Sayfa boyutu: {len(resp.text)} karakter")
-        print(f"[DEBUG] İlk 500 karakter:")
-        print(resp.text[:500])
-        print(f"[DEBUG] ─────────────────────────────")
+        if IS_DEBUG:
+            print(f"[DEBUG] Sayfa boyutu: {len(resp.text)} karakter")
+            print(f"[DEBUG] İlk 500 karakter:")
+            print(resp.text[:500])
+            print(f"[DEBUG] ─────────────────────────────")
 
         soup = BeautifulSoup(resp.text, "html.parser")
 
         # Birden fazla selector dene - XenForo versiyonuna göre değişebilir
         thread_items = soup.select("div.structItem")
-        print(f"[DEBUG] div.structItem ile {len(thread_items)} öğe bulundu")
+        if IS_DEBUG:
+            print(f"[DEBUG] div.structItem ile {len(thread_items)} öğe bulundu")
 
         if not thread_items:
             # Alternatif selectorler dene
             thread_items = soup.select("li.block-row") or soup.select("div.structItem--thread")
-            print(f"[DEBUG] Alternatif selector ile {len(thread_items)} öğe bulundu")
+            if IS_DEBUG:
+                print(f"[DEBUG] Alternatif selector ile {len(thread_items)} öğe bulundu")
 
         if not thread_items:
             # Debug: sayfadaki tüm linkleri kontrol et
             all_links = soup.find_all("a", href=True)
             konu_links = [a for a in all_links if "/konu/" in a.get("href", "")]
-            print(f"[DEBUG] Sayfadaki toplam link: {len(all_links)}, /konu/ içeren: {len(konu_links)}")
+            if IS_DEBUG:
+                print(f"[DEBUG] Sayfadaki toplam link: {len(all_links)}, /konu/ içeren: {len(konu_links)}")
 
             # Doğrudan konu linklerinden topic çek
             for a in konu_links:
@@ -225,7 +231,8 @@ def fetch_via_html(session, pages=PAGES_TO_SCAN):
                     "prefix": "",
                 })
 
-            print(f"[DEBUG] Link taramasından {len(topics)} konu eklendi")
+            if IS_DEBUG:
+                print(f"[DEBUG] Link taramasından {len(topics)} konu eklendi")
             continue
 
         for item in thread_items:
