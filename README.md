@@ -9,7 +9,7 @@
 ## 🏗️ Nasıl Çalışır?
 
 ```
-Her 10 dakikada bir:
+Her 30 dakikada bir:
   1. "Sıcak Fırsatlar" sayfasını tarar (ilk 2 sayfa)
   2. Konu başlıklarını config.json'daki anahtar kelimelerle karşılaştırır
   3. "İndirim Bitti" etiketli konuları otomatik atlar
@@ -87,7 +87,7 @@ Telefon numaran ve API key'in repo'da açık durmasın. GitHub Secrets kullan:
 3. Sol tarafta **"Fırsat Takipçisi"** workflow'unu gör
 4. **"Run workflow"** ile manuel test yap
 
-✅ Her şey doğruysa 10 dakikada bir otomatik çalışmaya başlar!
+✅ Her şey doğruysa 30 dakikada bir otomatik çalışmaya başlar!
 
 ---
 
@@ -111,6 +111,7 @@ Telefon numaran ve API key'in repo'da açık durmasın. GitHub Secrets kullan:
 - Marka + model yazarsan daha isabetli olur: `"RTX 5070"` > `"ekran kartı"`
 - Genel kelimeler çok fazla bildirim gönderebilir, dikkatli ol
 - Büyük/küçük harf ve Türkçe karakter fark etmez (otomatik normalize eder)
+- Kelime başında aranır, sonu serbesttir: `"RAM"` → "RAM'li" eşleşir ama "Program" / "Telegram" eşleşmez; `"Corsair RM"` → "Corsair RM850x" eşleşir
 
 ---
 
@@ -133,7 +134,7 @@ WhatsApp'ına şöyle bir mesaj gelecek:
 ## 🔧 Sık Sorulan Sorular
 
 **S: GitHub Actions ücretsiz mi?**
-Evet! Public repo'larda sınırsız, private repo'larda ayda 2000 dakika ücretsiz. Bu bot ayda ~4500 dakika kullanır, bu yüzden **repo'yu public yapmak** daha güvenli. (Secrets gizli kalır, endişelenme.)
+Evet! Public repo'larda sınırsız, private repo'larda ayda 2000 dakika ücretsiz. Bot 30 dakikada bir ~1 dakika çalıştığı için ayda ~1500 dakika kullanır, private repo'da da kotaya sığar. Sıklığı artırırsan (ör. 10 dakikada bir ≈ 4500 dakika/ay) **repo'yu public yap**. (Secrets gizli kalır, endişelenme.)
 
 **S: CallMeBot çalışmazsa?**
 CallMeBot bazen yavaş olabiliyor. Yedek olarak Telegram da ekleyebilirsin:
@@ -144,12 +145,16 @@ CallMeBot bazen yavaş olabiliyor. Yedek olarak Telegram da ekleyebilirsin:
 
 **S: Tarama sıklığını değiştirebilir miyim?**
 `.github/workflows/tracker.yml` dosyasındaki cron satırını düzenle:
+- `*/30 * * * *` → Her 30 dakika (varsayılan)
 - `*/10 * * * *` → Her 10 dakika
 - `*/15 * * * *` → Her 15 dakika
 - `*/5 * * * *` → Her 5 dakika (daha hızlı ama daha fazla Actions dakikası yer)
 
 **S: Çok fazla bildirim geliyor!**
 `config.json`'daki genel kelimeleri (SSD, RAM, GPU gibi) kaldır, sadece spesifik model numaraları bırak.
+
+**S: Actions'ta run kırmızı (failed) görünüyor?**
+Forumdan hiç konu alınamadığında (Cloudflare engeli, site yapısı değişikliği vb.) bot bilerek hata verir ki sessizce körleşmesin. Arada bir olursa sorun yok; sürekli oluyorsa aşağıdaki gibi debug logu aç.
 
 **S: Tarama çalışıyor ama konu bulamıyor, nasıl debug ederim?**
 Debug çıktıları (sayfa boyutu, HTML'in ilk 500 karakteri, selector sonuçları) varsayılan olarak kapalı. Açmak için:
