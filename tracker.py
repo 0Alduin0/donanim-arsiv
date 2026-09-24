@@ -66,6 +66,9 @@ HEADERS = {
 # Kaç sayfa taransın (1 sayfa ≈ 20 konu) - HTML yöntemi için
 PAGES_TO_SCAN = 2
 
+# Kaç konu ID'si hatırlansın (günde ~30 yeni konu → ~2 hafta)
+SEEN_LIMIT = 500
+
 # Debug çıktıları varsayılan olarak kapalı. DEBUG=true ile ya da Actions'ta
 # "Re-run jobs → Enable debug logging" ile (RUNNER_DEBUG=1) açılır.
 DEBUG = (
@@ -85,18 +88,30 @@ def load_config():
         return json.load(f)
 
 
+def newest_ids(ids):
+    """
+    En yeni SEEN_LIMIT konu ID'si, artan sırada.
+    Eklenme sırasına göre değil ID'ye göre kırpılıyor: forum konuları son
+    mesaja göre sıraladığı için yeni yanıt alan eski konular listeye geri
+    düşüyor ve eklenme sırasıyla kırpınca yeni konuları dışarı itiyorlardı.
+    """
+    return sorted({str(i) for i in ids if str(i).isdigit()}, key=int)[-SEEN_LIMIT:]
+
+
 def load_seen():
     """Daha önce görülmüş konu ID'lerini yükle."""
-    if os.path.exists(SEEN_FILE):
-        with open(SEEN_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return []
+    if not os.path.exists(SEEN_FILE):
+        return []
+    with open(SEEN_FILE, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+    # README kurulumda dosyayı boş bırakmayı söylüyor, boş dosya json'u patlatmasın
+    return newest_ids(json.loads(content)) if content else []
 
 
 def save_seen(seen_list):
-    """Görülmüş konu ID'lerini kaydet. Son 500 tanesini tut."""
+    """Görülmüş konu ID'lerini kaydet."""
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
-        json.dump(seen_list[-500:], f)
+        json.dump(newest_ids(seen_list), f)
 
 
 def fetch_topics(pages=PAGES_TO_SCAN):
@@ -278,9 +293,12 @@ def fetch_via_html(session, pages=PAGES_TO_SCAN):
 
 
 def extract_topic_id(href):
-    """URL'den konu ID'sini çıkar: /konu/baslik.123456/ → 123456"""
-    match = re.search(r"\.(\d+)/?", href)
-    return match.group(1) if match else href
+    """
+    URL'den konu ID'sini çıkar: /konu/baslik.123456/ → 123456
+    Slug'sız /konu/123456/ biçimini de tanır. Konu linki değilse None döner.
+    """
+    match = re.search(r"/konu/(?:[^/?#]*\.)?(\d+)(?:[/?#]|$)", href)
+    return match.group(1) if match else None
 
 
 TR_TO_ASCII = str.maketrans("ıöüşçğ", "iouscg")
@@ -396,6 +414,9 @@ def main():
     # ── Daha önce görülenleri yükle ──
     seen_ids = load_seen()
     print(f"[BİLGİ] {len(seen_ids)} konu daha önce görülmüş.")
+    # Liste dolunca eski ID'ler düşüyor. Hatırladığımız en eski konudan da eski
+    # olanlar yeni yanıt alıp öne çıkmış eski konulardır; zaten bildirildiler.
+    oldest_seen = min(map(int, seen_ids)) if len(seen_ids) >= SEEN_LIMIT else 0
 
     # ── Forumu tara ──
     topics = fetch_topics()
@@ -406,8 +427,8 @@ def main():
     failed = 0
 
     for topic in topics:
-        # Daha önce gördüysek atla
-        if topic["id"] in seen_ids:
+        # ID'siz linkleri takip edemeyiz; görülmüş ya da eski konuları atla
+        if not topic["id"] or topic["id"] in seen_ids or int(topic["id"]) < oldest_seen:
             continue
 
         matched, keyword = match_keywords(topic["title"], keywords)
