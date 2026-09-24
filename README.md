@@ -15,6 +15,7 @@ Her 10 dakikada bir:
   3. "İndirim Bitti" etiketli konuları otomatik atlar
   4. Yeni eşleşme bulursa WhatsApp'tan bildirim gönderir
   5. Tekrar bildirim göndermemek için görülen konuları kaydeder
+     (bildirim hiçbir kanaldan gidemezse konu bir sonraki taramada tekrar denenir)
 ```
 
 ---

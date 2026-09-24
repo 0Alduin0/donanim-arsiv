@@ -403,6 +403,7 @@ def main():
 
     # ── Eşleştirme ve bildirim ──
     new_matches = 0
+    failed = 0
 
     for topic in topics:
         # Daha önce gördüysek atla
@@ -418,17 +419,25 @@ def main():
             print(f"          Link: {topic['url']}")
 
             msg = format_notification(topic, keyword)
+            results = []
 
             # WhatsApp gönder
             if phone and apikey:
-                send_whatsapp(phone, apikey, msg)
+                results.append(send_whatsapp(phone, apikey, msg))
                 time.sleep(3)  # CallMeBot rate limit
 
             # Telegram yedek
             if tg_token and tg_chat:
-                send_telegram(tg_token, tg_chat, msg)
+                results.append(send_telegram(tg_token, tg_chat, msg))
 
-        # Görüldü olarak işaretle (eşleşsin eşleşmesin)
+            # Kanal tanımlı ama hiçbirinden gidemediyse görüldü işaretleme,
+            # sonraki çalıştırmada tekrar denensin. Kanal yoksa konsol çıktısı yeterli.
+            if results and not any(results):
+                failed += 1
+                print("[UYARI] Bildirim hiçbir kanaldan gönderilemedi, sonraki taramada tekrar denenecek.")
+                continue
+
+        # Görüldü olarak işaretle (eşleşmeyenler dahil)
         seen_ids.append(topic["id"])
 
     # ── Sonuçları kaydet ──
@@ -436,6 +445,8 @@ def main():
 
     print(f"\n{'=' * 60}")
     print(f"  Sonuç: {new_matches} yeni eşleşme bulundu.")
+    if failed:
+        print(f"  {failed} bildirim gönderilemedi, tekrar denenecek.")
     print(f"{'=' * 60}")
 
 
