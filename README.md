@@ -150,6 +150,11 @@ CallMeBot bazen yavaş olabiliyor. Yedek olarak Telegram da ekleyebilirsin:
 **S: Çok fazla bildirim geliyor!**
 `config.json`'daki genel kelimeleri (SSD, RAM, GPU gibi) kaldır, sadece spesifik model numaraları bırak.
 
+**S: Tarama çalışıyor ama konu bulamıyor, nasıl debug ederim?**
+Debug çıktıları (sayfa boyutu, HTML'in ilk 500 karakteri, selector sonuçları) varsayılan olarak kapalı. Açmak için:
+- GitHub Actions'ta başarısız çalıştırmayı **Re-run jobs → "Enable debug logging"** ile yeniden çalıştır
+- Lokalde `DEBUG=true python tracker.py`
+
 ---
 
 ## 📝 Lisans
