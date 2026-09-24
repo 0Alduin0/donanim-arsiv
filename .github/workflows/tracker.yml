@@ -1,7 +1,7 @@
 name: Fırsat Takipçisi
 
 on:
-  # Her 10 dakikada bir çalış
+  # Her 30 dakikada bir çalış
   schedule:
     - cron: '*/30 * * * *'
   
@@ -11,10 +11,17 @@ on:
 permissions:
   contents: write
 
+# Aynı anda iki tarama (cron + manuel) aynı konuları iki kez bildirip
+# seen_topics.json push'unda çakışmasın; sıradaki beklesin.
+concurrency:
+  group: tracker
+  cancel-in-progress: false
+
 jobs:
   scan:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 10
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -42,4 +49,7 @@ jobs:
           git config --global user.email "bot@tracker.local"
           git add seen_topics.json
           git diff --staged --quiet || git commit -m "update seen topics [skip ci]"
+          # Çalışma sırasında main'e commit geldiyse düz push reddedilir, seen
+          # kaybolur ve bu turda bildirilen konular sonraki turda tekrar bildirilir.
+          git pull --rebase
           git push
