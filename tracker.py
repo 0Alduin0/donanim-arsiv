@@ -153,7 +153,7 @@ def fetch_via_rss(session):
         topic_id = extract_topic_id(url)
 
         # "İndirim Bitti" olanları atla
-        if "bitti" in title.lower():
+        if "bitti" in normalize_tr(title):
             continue
 
         topics.append({
@@ -213,7 +213,7 @@ def fetch_via_html(session, pages=PAGES_TO_SCAN):
 
                 if not title or len(title) < 5:
                     continue
-                if "bitti" in title.lower():
+                if "bitti" in normalize_tr(title):
                     continue
 
                 if href.startswith("/"):
@@ -262,7 +262,7 @@ def fetch_via_html(session, pages=PAGES_TO_SCAN):
             prefix_el = item.select_one("span.label")
             prefix = prefix_el.get_text(strip=True) if prefix_el else ""
 
-            if "bitti" in prefix.lower() or "bitti" in title.lower():
+            if "bitti" in normalize_tr(prefix) or "bitti" in normalize_tr(title):
                 continue
 
             topics.append({
@@ -283,36 +283,28 @@ def extract_topic_id(href):
     return match.group(1) if match else href
 
 
+TR_TO_ASCII = str.maketrans("ıöüşçğ", "iouscg")
+
+
+def normalize_tr(text):
+    """
+    Karşılaştırma için küçült ve Türkçe karakterleri sadeleştir.
+    "İ" önce elle eşleniyor: str.lower() onu "i" + birleşen nokta (U+0307)
+    yapıyor ve "İNDİRİM BİTTİ" içinde "bitti" bulunamıyor.
+    """
+    return text.replace("İ", "i").lower().translate(TR_TO_ASCII)
+
+
 def match_keywords(title, keywords):
     """
     Başlıktaki kelimeleri kontrol et.
     Her keyword grubu için OR mantığı, gruplar arası AND değil.
     Herhangi bir keyword eşleşirse True döner.
     """
-    title_lower = title.lower()
-    # Türkçe karakter normalizasyonu
-    title_normalized = (
-        title_lower
-        .replace("ı", "i")
-        .replace("ö", "o")
-        .replace("ü", "u")
-        .replace("ş", "s")
-        .replace("ç", "c")
-        .replace("ğ", "g")
-    )
+    title_normalized = normalize_tr(title)
 
     for kw in keywords:
-        kw_lower = kw.lower()
-        kw_normalized = (
-            kw_lower
-            .replace("ı", "i")
-            .replace("ö", "o")
-            .replace("ü", "u")
-            .replace("ş", "s")
-            .replace("ç", "c")
-            .replace("ğ", "g")
-        )
-        if kw_normalized in title_normalized or kw_lower in title_lower:
+        if normalize_tr(kw) in title_normalized:
             return True, kw
     return False, None
 
