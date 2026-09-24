@@ -13,14 +13,22 @@ from bs4 import BeautifulSoup
 import json
 import os
 import re
+import sys
 import time
 from datetime import datetime, timezone
 from urllib.parse import quote
 
+# Sayfa çekerken yakalanacak hatalar
+FETCH_ERRORS = (requests.RequestException,)
+
 # CloudFlare bypass
 try:
     import cloudscraper
+    from cloudscraper.exceptions import CloudflareException
     HAS_CLOUDSCRAPER = True
+    # Çözülemeyen challenge'da cloudscraper RequestException değil kendi
+    # hatasını fırlatıyor; yakalanmazsa HTML yedeğine düşmeden script çöküyor.
+    FETCH_ERRORS += (CloudflareException,)
 except ImportError:
     HAS_CLOUDSCRAPER = False
 
@@ -139,7 +147,7 @@ def fetch_via_rss(session):
     try:
         resp = session.get(RSS_URL, headers=HEADERS, timeout=30)
         resp.raise_for_status()
-    except requests.RequestException as e:
+    except FETCH_ERRORS as e:
         print(f"[HATA] RSS alınamadı: {e}")
         return []
 
@@ -190,13 +198,16 @@ def fetch_via_html(session, pages=PAGES_TO_SCAN):
     topics = []
 
     for page_num in range(1, pages + 1):
+        if page_num > 1:
+            time.sleep(1)
+
         url = FORUM_URL if page_num == 1 else f"{FORUM_URL}page-{page_num}"
         print(f"[TARAMA] Sayfa {page_num}: {url}")
 
         try:
             resp = session.get(url, headers=HEADERS, timeout=30)
             resp.raise_for_status()
-        except requests.RequestException as e:
+        except FETCH_ERRORS as e:
             print(f"[HATA] Sayfa alınamadı: {e}")
             continue
 
@@ -286,8 +297,6 @@ def fetch_via_html(session, pages=PAGES_TO_SCAN):
                 "url": full_url,
                 "prefix": prefix,
             })
-
-        time.sleep(1)
 
     return topics
 
@@ -403,7 +412,7 @@ def main():
 
     if not keywords:
         print("[HATA] Anahtar kelime listesi boş! config.json'u kontrol et.")
-        return
+        return 1
 
     if not phone or not apikey:
         print("[UYARI] CallMeBot bilgileri eksik. Sadece konsola yazılacak.")
@@ -421,6 +430,12 @@ def main():
     # ── Forumu tara ──
     topics = fetch_topics()
     print(f"[BİLGİ] {len(topics)} aktif konu bulundu.")
+
+    if not topics:
+        # Forumda her zaman konu var; hiç gelmediyse RSS de HTML de engellendi
+        # ya da site yapısı değişti. Run kırmızı olsun ki sessizce körleşmeyelim.
+        print("[HATA] Hiç konu alınamadı, tarama başarısız.")
+        return 1
 
     # ── Eşleştirme ve bildirim ──
     new_matches = 0
@@ -472,4 +487,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
