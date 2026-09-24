@@ -16,7 +16,7 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 # Sayfa çekerken yakalanacak hatalar
 FETCH_ERRORS = (requests.RequestException,)
@@ -342,11 +342,10 @@ def match_keywords(title, keywords):
 
 def send_whatsapp(phone, apikey, message):
     """CallMeBot API ile WhatsApp mesajı gönder."""
-    encoded_msg = quote(message)
-    url = (
-        f"https://api.callmebot.com/whatsapp.php"
-        f"?phone={phone}&text={encoded_msg}&apikey={apikey}"
-    )
+    # Tüm parametreler encode ediliyor: "+905..." gibi bir numaradaki "+"
+    # ham bırakılınca sunucuda boşluğa dönüşüyordu.
+    query = urlencode({"phone": phone, "text": message, "apikey": apikey}, quote_via=quote)
+    url = f"https://api.callmebot.com/whatsapp.php?{query}"
 
     print(f"[WHATSAPP] Mesaj gönderiliyor: {phone}")
 
@@ -366,7 +365,9 @@ def send_whatsapp(phone, apikey, message):
 def send_telegram(bot_token, chat_id, message):
     """Telegram Bot API ile mesaj gönder (yedek kanal)."""
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    data = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
+    # Düz metin: mesajda HTML yok, parse_mode=HTML ile başlıktaki "<" veya "&"
+    # Telegram'da "can't parse entities" (400) hatasına yol açıyordu.
+    data = {"chat_id": chat_id, "text": message}
 
     try:
         resp = requests.post(url, data=data, timeout=30)
@@ -374,7 +375,7 @@ def send_telegram(bot_token, chat_id, message):
             print("[TELEGRAM] ✅ Mesaj gönderildi!")
             return True
         else:
-            print(f"[TELEGRAM] ❌ Hata: {resp.status_code}")
+            print(f"[TELEGRAM] ❌ Hata: {resp.status_code} - {resp.text[:200]}")
             return False
     except requests.RequestException as e:
         print(f"[TELEGRAM] ❌ Bağlantı hatası: {e}")
@@ -419,8 +420,10 @@ def main():
         print("[HATA] Anahtar kelime listesi boş! config.json'u kontrol et.")
         return 1
 
-    if not phone or not apikey:
-        print("[UYARI] CallMeBot bilgileri eksik. Sadece konsola yazılacak.")
+    if not (phone and apikey) and not (tg_token and tg_chat):
+        print("[UYARI] Bildirim kanalı tanımlı değil (CallMeBot/Telegram). Sadece konsola yazılacak.")
+    elif not (phone and apikey):
+        print("[BİLGİ] CallMeBot bilgileri eksik, sadece Telegram kullanılacak.")
 
     print(f"[BİLGİ] {len(keywords)} anahtar kelime yüklendi.")
     print(f"[BİLGİ] Kelimeler: {', '.join(keywords[:10])}...")
