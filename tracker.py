@@ -327,11 +327,15 @@ def match_keywords(title, keywords):
     Başlıktaki kelimeleri kontrol et.
     Her keyword grubu için OR mantığı, gruplar arası AND değil.
     Herhangi bir keyword eşleşirse True döner.
+
+    Keyword kelime başında aranır: "RAM" → "RAM'li" eşleşir, "Program" /
+    "Telegram" eşleşmez; "DDR5" → "LPDDR5", "2TB" → "12TB" eşleşmez.
+    Sonu serbest: "Corsair RM" gibi önekler "Corsair RM850x"i yakalasın.
     """
     title_normalized = normalize_tr(title)
 
     for kw in keywords:
-        if normalize_tr(kw) in title_normalized:
+        if re.search(r"(?<!\w)" + re.escape(normalize_tr(kw)), title_normalized):
             return True, kw
     return False, None
 
@@ -402,7 +406,8 @@ def main():
 
     # ── Ayarları yükle ──
     config = load_config()
-    keywords = config.get("keywords", [])
+    # Boş keyword her başlıkla eşleşir ve her konu için bildirim atar
+    keywords = [kw for kw in config.get("keywords", []) if kw.strip()]
     phone = config.get("callmebot_phone", "") or os.environ.get("CALLMEBOT_PHONE", "")
     apikey = config.get("callmebot_apikey", "") or os.environ.get("CALLMEBOT_APIKEY", "")
 
