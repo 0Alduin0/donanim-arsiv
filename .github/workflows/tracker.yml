@@ -42,8 +42,12 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python tracker.py
 
-      # seen_topics.json'u commit et ki aynı konuyu tekrar bildirmesin
+      # seen_topics.json'u commit et ki aynı konuyu tekrar bildirmesin.
+      # Tracker bir bildirim gönderemeyince de kırmızı çıkıyor; o turda başarıyla
+      # gidenler yine kaydedilmeli, yoksa sonraki turda tekrar gönderilirler.
+      # Tarama hiç yapılamadıysa dosya değişmez, commit atılmaz.
       - name: Save seen topics
+        if: ${{ !cancelled() }}
         run: |
           git config --global user.name "Firsat Bot"
           git config --global user.email "bot@tracker.local"

@@ -10,13 +10,19 @@
 
 ```
 Her 30 dakikada bir:
-  1. "Sıcak Fırsatlar" sayfasını tarar (ilk 2 sayfa)
+  1. "Sıcak Fırsatlar" sayfasını tarar (ilk 2 sayfa, tracker.py'deki PAGES_TO_SCAN)
+     (sayfa alınamazsa RSS feed'i yedek olarak denenir)
   2. Konu başlıklarını config.json'daki anahtar kelimelerle karşılaştırır
-  3. "İndirim Bitti" etiketli konuları otomatik atlar
+  3. "İndirim Bitti" etiketli ya da başlığında "bitti" geçen konuları atlar
   4. Yeni eşleşme bulursa WhatsApp'tan bildirim gönderir
+     (tur başına en fazla 10 bildirim, MAX_NOTIFICATIONS_PER_RUN; fazlası bir sonraki taramada gider)
   5. Tekrar bildirim göndermemek için görülen konuları kaydeder
      (bildirim hiçbir kanaldan gidemezse konu bir sonraki taramada tekrar denenir)
 ```
+
+> **İlk çalıştırma:** `seen_topics.json` boşken bot forumdaki mevcut konuları sadece "görüldü" olarak işaretler, bildirim göndermez. Aksi halde kurulumda onlarca mesaj gelir ve CallMeBot limiti dolar. Bildirimler ikinci taramadan itibaren, yeni açılan konular için başlar.
+
+> **RSS yedeği hakkında:** Forumun RSS feed'i şu an giriş yapmamış kullanıcılara kapalı (403). Açık olduğunda da konu etiketini taşımadığı için bu yolda "İndirim Bitti" kontrolü sadece başlıktan yapılır ve bildirimde etiket görünmez. Bu yolda sayfa sınırı uygulanmaz, feed'de ne varsa işlenir.
 
 ---
 
@@ -70,7 +76,7 @@ git push
 
 ### 4️⃣ GitHub Secrets Ekle (Çok Önemli!)
 
-Telefon numaran ve API key'in repo'da açık durmasın. GitHub Secrets kullan:
+Bot telefon numarasını ve API key'leri **sadece ortam değişkeninden** okur. `config.json`'a yazılan değerler dikkate alınmaz. Böylece sırlar repo'ya commit'lenmez ve Actions loglarında maskelenir.
 
 1. Repo sayfanda **Settings** → **Secrets and variables** → **Actions** git
 2. **"New repository secret"** tıkla ve şunları ekle:
@@ -80,12 +86,19 @@ Telefon numaran ve API key'in repo'da açık durmasın. GitHub Secrets kullan:
 | `CALLMEBOT_PHONE` | Telefon numaran (ülke kodlu) | `905551234567` |
 | `CALLMEBOT_APIKEY` | CallMeBot'un gönderdiği key | `1234567` |
 
+Lokalde çalıştırırken aynı isimlerle ortam değişkeni ver:
+```bash
+CALLMEBOT_PHONE=905551234567 CALLMEBOT_APIKEY=1234567 python tracker.py
+```
+
 ### 5️⃣ GitHub Actions'ı Aktifle
 
 1. Repo sayfanda **Actions** sekmesine git
 2. "I understand my workflows..." butonuna tıkla
 3. Sol tarafta **"Fırsat Takipçisi"** workflow'unu gör
 4. **"Run workflow"** ile manuel test yap
+
+İlk çalıştırmada mesaj gelmemesi normal: bot mevcut konuları işaretler ve logda kaç eşleşmeyi atladığını yazar (bkz. *İlk çalıştırma* notu). `seen_topics.json` dolu olarak commit'lendiyse testin başarılı olduğunu anlarsın.
 
 ✅ Her şey doğruysa 30 dakikada bir otomatik çalışmaya başlar!
 
@@ -129,6 +142,8 @@ WhatsApp'ına şöyle bir mesaj gelecek:
 ⏰ 14:30 05/05/2026 UTC
 ```
 
+Baştaki `[🔥İndirim]` konunun forumdaki etiketidir. Etiketsiz konularda ve RSS yedeğinden gelen bildirimlerde bu kısım olmaz.
+
 ---
 
 ## 🔧 Sık Sorulan Sorular
@@ -154,7 +169,10 @@ CallMeBot bazen yavaş olabiliyor. Yedek olarak Telegram da ekleyebilirsin:
 `config.json`'daki genel kelimeleri (SSD, RAM, GPU gibi) kaldır, sadece spesifik model numaraları bırak.
 
 **S: Actions'ta run kırmızı (failed) görünüyor?**
-Forumdan hiç konu alınamadığında (Cloudflare engeli, site yapısı değişikliği vb.) bot bilerek hata verir ki sessizce körleşmesin. Arada bir olursa sorun yok; sürekli oluyorsa aşağıdaki gibi debug logu aç.
+Bot sessizce körleşmesin diye şu durumlarda bilerek hata verir, logda sebebi yazar:
+- **Forumdan hiç konu alınamadı** (Cloudflare engeli, site yapısı değişikliği vb.). Arada bir olursa sorun yok; sürekli oluyorsa aşağıdaki gibi debug logu aç.
+- **Bildirim hiçbir kanaldan gönderilemedi.** Konu bir sonraki taramada tekrar denenir. Sürekli oluyorsa logdaki `[WHATSAPP] ❌ Hata` satırına bak: çoğunlukla API key geçersizdir, CallMeBot'tan yenisini al.
+- **Bildirim kanalı tanımlı değil.** Secrets eksik ya da adı yanlış yazılmış (adım 4).
 
 **S: Tarama çalışıyor ama konu bulamıyor, nasıl debug ederim?**
 Debug çıktıları (sayfa boyutu, HTML'in ilk 500 karakteri, selector sonuçları) varsayılan olarak kapalı. Açmak için:

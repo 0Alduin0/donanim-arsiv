@@ -56,7 +56,8 @@ CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
 SEEN_FILE = os.path.join(os.path.dirname(__file__), "seen_topics.json")
 
 FORUM_URL = "https://forum.donanimarsivi.com/forumlar/Sicakfirsatlar/"
-# XenForo RSS feed - CloudFlare'ı bypass eder, daha güvenilir
+# XenForo RSS feed - yedek. Forum şu an misafire 403 + giriş sayfası dönüyor,
+# açılırsa diye tutuluyor. Konu etiketini (🔥İndirim vb.) taşımıyor.
 RSS_URL = "https://forum.donanimarsivi.com/forumlar/Sicakfirsatlar/index.rss"
 
 HEADERS = {
@@ -71,11 +72,20 @@ HEADERS = {
     "Referer": "https://forum.donanimarsivi.com/",
 }
 
-# Kaç sayfa taransın (1 sayfa ≈ 20 konu) - HTML yöntemi için
+# Kaç sayfa taransın (1 sayfa = 15 konu). RSS yedeğinde uygulanmaz, feed'in
+# boyutunu forum belirliyor.
 PAGES_TO_SCAN = 2
 
 # Kaç konu ID'si hatırlansın (günde ~30 yeni konu → ~2 hafta)
 SEEN_LIMIT = 500
+
+# Tur başına en fazla kaç bildirim gönderilsin. Fazlası görüldü işaretlenmez,
+# sonraki turda gider; CallMeBot limiti tek turda dolup gerçek bildirimler düşmesin.
+MAX_NOTIFICATIONS_PER_RUN = 10
+
+# Sırlar yalnızca ortam değişkeninden (GitHub Secrets) okunuyor. Eski kurulumlarda
+# config.json'da kalmış olabilirler; uyarmak için isimleri tutuluyor.
+LEGACY_SECRET_KEYS = ("callmebot_phone", "callmebot_apikey", "telegram_bot_token", "telegram_chat_id")
 
 # Debug çıktıları varsayılan olarak kapalı. DEBUG=true ile ya da Actions'ta
 # "Re-run jobs → Enable debug logging" ile (RUNNER_DEBUG=1) açılır.
@@ -125,23 +135,28 @@ def save_seen(seen_list):
 def fetch_topics(pages=PAGES_TO_SCAN):
     """
     Sıcak Fırsatlar'daki konuları çek.
-    Önce RSS feed dener (CloudFlare bypass), 
-    başarısız olursa HTML scraping'e düşer.
+    Önce HTML sayfalarını tarar: konu etiketi yalnızca orada var ("İndirim
+    Bitti" filtresi ve bildirimdeki etiket buna dayanıyor). Sonuç çıkmazsa
+    RSS feed'e düşer.
     """
     session = create_session()
 
-    # Yöntem 1: RSS Feed (tercih edilen)
-    topics = fetch_via_rss(session)
+    # Yöntem 1: HTML Scraping (tercih edilen)
+    topics = fetch_via_html(session, pages)
     if topics:
         return topics
 
-    # Yöntem 2: HTML Scraping (yedek)
-    print("[BİLGİ] RSS başarısız, HTML scraping deneniyor...")
-    return fetch_via_html(session, pages)
+    # Yöntem 2: RSS Feed (yedek)
+    print("[BİLGİ] HTML taramasından konu çıkmadı, RSS feed deneniyor...")
+    return fetch_via_rss(session)
 
 
 def fetch_via_rss(session):
-    """XenForo'nun RSS feed'ini kullan."""
+    """
+    XenForo'nun RSS feed'ini kullan (yedek).
+    Feed konu etiketini taşımıyor (category alanı forum adı), bu yolda
+    "bitti" kontrolü yalnızca başlıktan yapılabiliyor.
+    """
     print(f"[TARAMA] RSS feed: {RSS_URL}")
 
     try:
@@ -192,8 +207,9 @@ def fetch_via_rss(session):
 
 def fetch_via_html(session, pages=PAGES_TO_SCAN):
     """
-    HTML scraping yöntemi (yedek).
-    Sıcak Fırsatlar sayfalarını tara, konu başlıklarını ve linklerini döndür.
+    HTML scraping yöntemi (birincil).
+    Sıcak Fırsatlar sayfalarını tara, konu başlıklarını, linklerini ve
+    etiketlerini döndür.
     """
     topics = []
 
@@ -217,18 +233,20 @@ def fetch_via_html(session, pages=PAGES_TO_SCAN):
 
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Birden fazla selector dene - XenForo versiyonuna göre değişebilir
-        thread_items = soup.select("div.structItem")
+        # Yalnızca ana içerik sütunu. Kenar çubuğundaki "son konular" bloğu
+        # (li.block-row) başka forumların konularını listeliyor, üst menüde de
+        # /konu/ linkleri var; sayfanın tamamı taranınca fırsat diye bildiriliyorlardı.
+        content = soup.select_one("div.p-body-content")
+        if content is None:
+            print(f"[HATA] Sayfa {page_num}: ana içerik bulunamadı (Cloudflare sayfası ya da tema değişikliği).")
+            continue
+
+        thread_items = content.select("div.structItem")
         debug(f"div.structItem ile {len(thread_items)} öğe bulundu")
 
         if not thread_items:
-            # Alternatif selectorler dene
-            thread_items = soup.select("li.block-row") or soup.select("div.structItem--thread")
-            debug(f"Alternatif selector ile {len(thread_items)} öğe bulundu")
-
-        if not thread_items:
-            # Debug: sayfadaki tüm linkleri kontrol et
-            all_links = soup.find_all("a", href=True)
+            # Debug: içerikteki tüm linkleri kontrol et
+            all_links = content.find_all("a", href=True)
             konu_links = [a for a in all_links if "/konu/" in a.get("href", "")]
             debug(f"Sayfadaki toplam link: {len(all_links)}, /konu/ içeren: {len(konu_links)}")
 
@@ -285,7 +303,7 @@ def fetch_via_html(session, pages=PAGES_TO_SCAN):
 
             topic_id = extract_topic_id(href)
 
-            prefix_el = item.select_one("span.label")
+            prefix_el = item.select_one("div.structItem-title span.label")
             prefix = prefix_el.get_text(strip=True) if prefix_el else ""
 
             if "bitti" in normalize_tr(prefix) or "bitti" in normalize_tr(title):
@@ -340,14 +358,26 @@ def match_keywords(title, keywords):
     return False, None
 
 
+def redact(text, *secrets):
+    """
+    Loga basılacak metinden sırları çıkar. Actions yalnızca Secret'ın birebir
+    değerini maskeliyor; URL-encode edilmiş ya da "+" eklenmiş hali açık kalıyor.
+    Uzun olan önce: kısa bir sır uzun olanın içindeyse onu bölmesin.
+    """
+    for secret in sorted(filter(None, secrets), key=len, reverse=True):
+        text = text.replace(secret, "***")
+    return text
+
+
 def send_whatsapp(phone, apikey, message):
     """CallMeBot API ile WhatsApp mesajı gönder."""
     # Tüm parametreler encode ediliyor: "+905..." gibi bir numaradaki "+"
     # ham bırakılınca sunucuda boşluğa dönüşüyordu.
     query = urlencode({"phone": phone, "text": message, "apikey": apikey}, quote_via=quote)
     url = f"https://api.callmebot.com/whatsapp.php?{query}"
+    secrets = (phone, re.sub(r"\D", "", phone), apikey)
 
-    print(f"[WHATSAPP] Mesaj gönderiliyor: {phone}")
+    print("[WHATSAPP] Mesaj gönderiliyor...")
 
     try:
         resp = requests.get(url, timeout=30)
@@ -355,10 +385,15 @@ def send_whatsapp(phone, apikey, message):
             print("[WHATSAPP] ✅ Mesaj gönderildi!")
             return True
         else:
-            print(f"[WHATSAPP] ❌ Hata: {resp.status_code} - {resp.text[:200]}")
+            # Hata gövdesi HTML: önce numarayı ve mesajın tamamını yansıtıyor,
+            # sebep ("APIKey is invalid" vb.) en sonda. Baştan kırpınca sebep
+            # kayboluyor, numara loga düşüyordu.
+            body = " ".join(re.sub(r"<[^>]+>", " ", resp.text).split())
+            print(f"[WHATSAPP] ❌ Hata: {resp.status_code} - {redact(body, *secrets)[-200:]}")
             return False
     except requests.RequestException as e:
-        print(f"[WHATSAPP] ❌ Bağlantı hatası: {e}")
+        # Bağlantı hatalarının mesajı istek URL'sini (numara + apikey) içeriyor
+        print(f"[WHATSAPP] ❌ Bağlantı hatası: {redact(str(e), *secrets)}")
         return False
 
 
@@ -378,7 +413,8 @@ def send_telegram(bot_token, chat_id, message):
             print(f"[TELEGRAM] ❌ Hata: {resp.status_code} - {resp.text[:200]}")
             return False
     except requests.RequestException as e:
-        print(f"[TELEGRAM] ❌ Bağlantı hatası: {e}")
+        # Bağlantı hatalarının mesajı token'lı URL'yi içeriyor
+        print(f"[TELEGRAM] ❌ Bağlantı hatası: {redact(str(e), bot_token)}")
         return False
 
 
@@ -409,20 +445,43 @@ def main():
     config = load_config()
     # Boş keyword her başlıkla eşleşir ve her konu için bildirim atar
     keywords = [kw for kw in config.get("keywords", []) if kw.strip()]
-    phone = config.get("callmebot_phone", "") or os.environ.get("CALLMEBOT_PHONE", "")
-    apikey = config.get("callmebot_apikey", "") or os.environ.get("CALLMEBOT_APIKEY", "")
+
+    # Sırlar yalnızca ortam değişkeninden: config.json public repoda duruyor
+    # ve oradan gelen değer Actions'ın secret maskelemesine girmiyor.
+    # strip: Secret'a yapıştırırken sona kaçan satır sonu "APIKey is invalid" yapıyor.
+    phone = os.environ.get("CALLMEBOT_PHONE", "").strip()
+    apikey = os.environ.get("CALLMEBOT_APIKEY", "").strip()
 
     # Telegram yedek kanal (opsiyonel)
-    tg_token = config.get("telegram_bot_token", "") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    tg_chat = config.get("telegram_chat_id", "") or os.environ.get("TELEGRAM_CHAT_ID", "")
+    tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+
+    has_whatsapp = bool(phone and apikey)
+    has_telegram = bool(tg_token and tg_chat)
+
+    legacy = [k for k in LEGACY_SECRET_KEYS if config.get(k)]
+    if legacy:
+        print(f"[UYARI] config.json'daki {', '.join(legacy)} artık okunmuyor. "
+              "Ortam değişkeni / GitHub Secret olarak tanımla ve config.json'dan sil.")
+
+    # Çiftin yarısı tanımlıysa büyük ihtimalle Secret adı yanlış yazıldı
+    if bool(phone) != bool(apikey):
+        print("[UYARI] CALLMEBOT_PHONE ve CALLMEBOT_APIKEY'den biri eksik, WhatsApp kanalı kapalı.")
+    if bool(tg_token) != bool(tg_chat):
+        print("[UYARI] TELEGRAM_BOT_TOKEN ve TELEGRAM_CHAT_ID'den biri eksik, Telegram kanalı kapalı.")
 
     if not keywords:
         print("[HATA] Anahtar kelime listesi boş! config.json'u kontrol et.")
         return 1
 
-    if not (phone and apikey) and not (tg_token and tg_chat):
+    if not has_whatsapp and not has_telegram:
+        # Actions'ta kanalsız tur konuları görüldü işaretleyip kimseye haber
+        # vermeden yeşil biterdi; eşleşmeler sessizce kaybolurdu.
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print("[HATA] Bildirim kanalı tanımlı değil. GitHub Secrets'ı kontrol et (README adım 4).")
+            return 1
         print("[UYARI] Bildirim kanalı tanımlı değil (CallMeBot/Telegram). Sadece konsola yazılacak.")
-    elif not (phone and apikey):
+    elif not has_whatsapp:
         print("[BİLGİ] CallMeBot bilgileri eksik, sadece Telegram kullanılacak.")
 
     print(f"[BİLGİ] {len(keywords)} anahtar kelime yüklendi.")
@@ -434,6 +493,11 @@ def main():
     # Liste dolunca eski ID'ler düşüyor. Hatırladığımız en eski konudan da eski
     # olanlar yeni yanıt alıp öne çıkmış eski konulardır; zaten bildirildiler.
     oldest_seen = min(map(int, seen_ids)) if len(seen_ids) >= SEEN_LIMIT else 0
+    # Liste boşsa (yeni kurulum, sıfırlanan dosya) forumdaki her konu yeni
+    # görünür ve her eşleşmeye ayrı mesaj gider. Bu tur sadece işaretlenir.
+    bootstrap = not seen_ids
+    if bootstrap:
+        print("[BİLGİ] İlk çalıştırma: mevcut konular görüldü olarak işaretlenecek, bildirim gönderilmeyecek.")
 
     # ── Forumu tara ──
     topics = fetch_topics()
@@ -448,15 +512,30 @@ def main():
     # ── Eşleştirme ve bildirim ──
     new_matches = 0
     failed = 0
+    deferred = 0
+    silenced = 0
+    # Tarama sırasında yeni mesaj alan konu sayfa 1'den 2'ye kayıp iki kez
+    # gelebiliyor; gönderilemeyen ya da ertelenen konu seen'e girmediği için
+    # ikinci kopyası tekrar denenir ve sayaçları şişirirdi.
+    handled = set()
 
     for topic in topics:
         # ID'siz linkleri takip edemeyiz; görülmüş ya da eski konuları atla
-        if not topic["id"] or topic["id"] in seen_ids or int(topic["id"]) < oldest_seen:
+        if (not topic["id"] or topic["id"] in handled or topic["id"] in seen_ids
+                or int(topic["id"]) < oldest_seen):
             continue
+        handled.add(topic["id"])
 
         matched, keyword = match_keywords(topic["title"], keywords)
 
-        if matched:
+        if matched and bootstrap:
+            silenced += 1
+        elif matched:
+            if new_matches >= MAX_NOTIFICATIONS_PER_RUN:
+                # Görüldü işaretleme, sonraki turda gönderilsin
+                deferred += 1
+                continue
+
             new_matches += 1
             print(f"\n[EŞLEŞTİ] 🎯 {topic['title']}")
             print(f"          Kelime: {keyword}")
@@ -466,13 +545,17 @@ def main():
             results = []
 
             # WhatsApp gönder
-            if phone and apikey:
+            if has_whatsapp:
                 results.append(send_whatsapp(phone, apikey, msg))
-                time.sleep(3)  # CallMeBot rate limit
 
             # Telegram yedek
-            if tg_token and tg_chat:
+            if has_telegram:
                 results.append(send_telegram(tg_token, tg_chat, msg))
+
+            # Rate limit: CallMeBot için, Telegram da aynı sohbete art arda
+            # gelen mesajlarda 429 dönüyor. Yalnızca WhatsApp'ta beklemek yetmiyordu.
+            if results:
+                time.sleep(3)
 
             # Kanal tanımlı ama hiçbirinden gidemediyse görüldü işaretleme,
             # sonraki çalıştırmada tekrar denensin. Kanal yoksa konsol çıktısı yeterli.
@@ -488,11 +571,25 @@ def main():
     save_seen(seen_ids)
 
     print(f"\n{'=' * 60}")
-    print(f"  Sonuç: {new_matches} yeni eşleşme bulundu.")
+    if bootstrap:
+        print(f"  İlk çalıştırma: {len(seen_ids)} konu işaretlendi, "
+              f"{silenced} eşleşme bildirilmedi.")
+    else:
+        print(f"  Sonuç: {new_matches} yeni eşleşme bulundu.")
     if failed:
         print(f"  {failed} bildirim gönderilemedi, tekrar denenecek.")
+    if deferred:
+        print(f"  Tur sınırı ({MAX_NOTIFICATIONS_PER_RUN}) doldu, "
+              f"{deferred} eşleşme sonraki taramaya kaldı.")
     print(f"{'=' * 60}")
+
+    # Geçersiz/iptal edilmiş API key'de her tur yeşil biter ve kimse fark
+    # etmezdi. Run kırmızı olsun; seen yine de kaydedildi, workflow commit'liyor.
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
+    # Windows'ta çıktı dosyaya/pipe'a yönlenince cp1254 kullanılıyor ve ilk
+    # emojide UnicodeEncodeError ile çöküyordu.
+    sys.stdout.reconfigure(encoding="utf-8")
     sys.exit(main())
