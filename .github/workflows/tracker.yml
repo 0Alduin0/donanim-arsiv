@@ -26,6 +26,30 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      # Görülen konular main'de değil ayrı "state" dalında tutuluyor: her tur
+      # main'e düşen bot commit'i geçmişi dolduruyor, gerçek değişiklikleri
+      # gömüyordu. Dal state/ klasörüne açılıyor, tracker SEEN_FILE ile onu kullanıyor.
+      - name: Checkout state
+        id: state
+        run: |
+          # ls-remote: 0 dal var, 2 dal yok, başka kod erişim hatası. Hatayı "dal
+          # yok" sanıp main'deki eski listeyle başlarsak aynı konular yeniden bildirilir.
+          status=0
+          git ls-remote --exit-code --heads origin state > /dev/null || status=$?
+          if [ "$status" -eq 0 ]; then
+            git fetch --depth=1 origin state
+            git worktree add -B state state FETCH_HEAD
+          elif [ "$status" -eq 2 ]; then
+            # İlk tur: dalı main'deki son seen_topics.json ile başlat
+            echo "state dalı yok, main'deki seen_topics.json ile oluşturuluyor."
+            git worktree add --detach state
+            git -C state checkout --orphan state
+            git -C state rm -rfq .
+            if [ -f seen_topics.json ]; then cp seen_topics.json state/; fi
+          else
+            exit "$status"
+          fi
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -40,20 +64,22 @@ jobs:
           CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SEEN_FILE: state/seen_topics.json
         run: python tracker.py
 
-      # seen_topics.json'u commit et ki aynı konuyu tekrar bildirmesin.
+      # seen_topics.json'u state dalına commit et ki aynı konuyu tekrar bildirmesin.
       # Tracker bir bildirim gönderemeyince de kırmızı çıkıyor; o turda başarıyla
       # gidenler yine kaydedilmeli, yoksa sonraki turda tekrar gönderilirler.
       # Tarama hiç yapılamadıysa dosya değişmez, commit atılmaz.
+      # state dalına yalnızca bu workflow yazıyor ve concurrency aynı anda tek tur
+      # çalıştırıyor; main'e gelen commit'ler artık push'u reddettirmiyor.
       - name: Save seen topics
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.state.outcome == 'success' }}
+        working-directory: state
         run: |
           git config --global user.name "Firsat Bot"
           git config --global user.email "bot@tracker.local"
-          git add seen_topics.json
-          git diff --staged --quiet || git commit -m "update seen topics [skip ci]"
-          # Çalışma sırasında main'e commit geldiyse düz push reddedilir, seen
-          # kaybolur ve bu turda bildirilen konular sonraki turda tekrar bildirilir.
-          git pull --rebase
-          git push
+          git add -A
+          git diff --staged --quiet && exit 0
+          git commit -qm "update seen topics [skip ci]"
+          git push origin state

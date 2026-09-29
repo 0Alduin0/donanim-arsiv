@@ -20,6 +20,8 @@ Her 30 dakikada bir:
      (bildirim hiçbir kanaldan gidemezse konu bir sonraki taramada tekrar denenir)
 ```
 
+> **Görülen konular nerede?** Actions'ta `seen_topics.json` `main`'de değil, ayrı bir `state` dalında tutulur. Böylece her taramada `main`'e bot commit'i düşmez, commit geçmişi yalnızca gerçek değişiklikleri gösterir. `state` dalı ilk taramada kendiliğinden oluşur ve başlangıç listesi olarak `main`'deki `seen_topics.json`'ı alır; dal oluştuktan sonra `main`'deki kopya kullanılmaz. Lokalde çalıştırınca script'in yanındaki `seen_topics.json` kullanılır.
+
 > **İlk çalıştırma:** `seen_topics.json` boşken bot forumdaki mevcut konuları sadece "görüldü" olarak işaretler, bildirim göndermez. Aksi halde kurulumda onlarca mesaj gelir ve CallMeBot limiti dolar. Bildirimler ikinci taramadan itibaren, yeni açılan konular için başlar.
 
 > **RSS yedeği hakkında:** Forumun RSS feed'i şu an giriş yapmamış kullanıcılara kapalı (403). Açık olduğunda da konu etiketini taşımadığı için bu yolda "İndirim Bitti" kontrolü sadece başlıktan yapılır ve bildirimde etiket görünmez. Bu yolda sayfa sınırı uygulanmaz, feed'de ne varsa işlenir.
@@ -53,12 +55,15 @@ Bu projedeki tüm dosyaları repo'na yükle:
 da-firsat-tracker/
 ├── .github/
 │   └── workflows/
-│       └── tracker.yml        ← GitHub Actions (zamanlayıcı)
+│       ├── tracker.yml        ← GitHub Actions (zamanlayıcı)
+│       └── test.yml           ← Kod değişince testleri çalıştırır
 ├── tracker.py                 ← Ana script
+├── test_tracker.py            ← Testler
 ├── config.json                ← Anahtar kelimeler
-├── seen_topics.json           ← Görülmüş konular (boş bırak)
+├── seen_topics.json           ← Görülmüş konuların başlangıç listesi (boş bırak)
 ├── requirements.txt           ← Python kütüphaneleri
 ├── .gitignore
+├── LICENSE
 └── README.md
 ```
 
@@ -98,7 +103,7 @@ CALLMEBOT_PHONE=905551234567 CALLMEBOT_APIKEY=1234567 python tracker.py
 3. Sol tarafta **"Fırsat Takipçisi"** workflow'unu gör
 4. **"Run workflow"** ile manuel test yap
 
-İlk çalıştırmada mesaj gelmemesi normal: bot mevcut konuları işaretler ve logda kaç eşleşmeyi atladığını yazar (bkz. *İlk çalıştırma* notu). `seen_topics.json` dolu olarak commit'lendiyse testin başarılı olduğunu anlarsın.
+İlk çalıştırmada mesaj gelmemesi normal: bot mevcut konuları işaretler ve logda kaç eşleşmeyi atladığını yazar (bkz. *İlk çalıştırma* notu). Repo'da `state` dalı oluşup içindeki `seen_topics.json` dolduysa testin başarılı olduğunu anlarsın.
 
 ✅ Her şey doğruysa 30 dakikada bir otomatik çalışmaya başlar!
 
@@ -144,6 +149,8 @@ WhatsApp'ına şöyle bir mesaj gelecek:
 
 Baştaki `[🔥İndirim]` konunun forumdaki etiketidir. Etiketsiz konularda ve RSS yedeğinden gelen bildirimlerde bu kısım olmaz.
 
+Telegram'a aynı mesaj düz metin olarak gider: yıldızlar olmadan `🔥 FIRSAT ALARMI! 🔥` yazar.
+
 ---
 
 ## 🔧 Sık Sorulan Sorular
@@ -179,8 +186,16 @@ Debug çıktıları (sayfa boyutu, HTML'in ilk 500 karakteri, selector sonuçlar
 - GitHub Actions'ta başarısız çalıştırmayı **Re-run jobs → "Enable debug logging"** ile yeniden çalıştır
 - Lokalde `DEBUG=true python tracker.py`
 
+**S: Kodu değiştirdim, bir şeyi bozup bozmadığımı nasıl anlarım?**
+Eşleştirme fonksiyonları (`normalize_tr`, `match_keywords`, `extract_topic_id`, `newest_ids`) ve bildirim metni için testler var. Ağa bağlanmadan çalışırlar:
+```bash
+pip install -r requirements.txt pytest
+pytest -q
+```
+`.py` dosyalarını değiştiren her push'ta **Testler** workflow'u bunları otomatik çalıştırır. Tarama workflow'unu durdurmaz, kırmızı çıkarsa düzeltmeyi gözden geçir.
+
 ---
 
 ## 📝 Lisans
 
-Kişisel kullanım için serbesttir.
+[MIT](LICENSE)

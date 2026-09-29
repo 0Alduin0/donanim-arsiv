@@ -1,0 +1,42 @@
+name: Testler
+
+# Kod değişince çalışır. Tarama workflow'una adım olarak eklenmedi: orada
+# kırmızı bir test her 30 dakikalık taramayı durdururdu; burada bozuk bir
+# düzeltme push'lanır push'lanmaz yakalanıyor.
+on:
+  push:
+    # state dalı yalnızca seen_topics.json taşıyor
+    branches-ignore: [state]
+    paths:
+      - '**.py'
+      - 'requirements.txt'
+      - '.github/workflows/test.yml'
+  pull_request:
+    paths:
+      - '**.py'
+      - 'requirements.txt'
+      - '.github/workflows/test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run tests
+        run: pytest -q

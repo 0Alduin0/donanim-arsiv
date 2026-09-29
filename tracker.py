@@ -53,7 +53,9 @@ def create_session():
 
 # ── Ayarlar ──────────────────────────────────────────────────────────
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
-SEEN_FILE = os.path.join(os.path.dirname(__file__), "seen_topics.json")
+# Actions'ta workflow bunu "state" dalındaki kopyaya yönlendiriyor (SEEN_FILE);
+# main'e her tur bot commit'i düşmesin. Lokalde script'in yanındaki dosya.
+SEEN_FILE = os.environ.get("SEEN_FILE") or os.path.join(os.path.dirname(__file__), "seen_topics.json")
 
 FORUM_URL = "https://forum.donanimarsivi.com/forumlar/Sicakfirsatlar/"
 # XenForo RSS feed - yedek. Forum şu an misafire 403 + giriş sayfası dönüyor,
@@ -418,13 +420,17 @@ def send_telegram(bot_token, chat_id, message):
         return False
 
 
-def format_notification(topic, matched_keyword):
-    """Bildirim mesajını formatla."""
+def format_notification(topic, matched_keyword, bold="*"):
+    """
+    Bildirim mesajını formatla.
+    bold: başlığı kalın yapan işaret. WhatsApp "*" kullanıyor; Telegram'a düz
+    metin gidiyor (parse_mode yok), orada yıldızlar olduğu gibi görünüyordu.
+    """
     now = datetime.now(timezone.utc).strftime("%H:%M %d/%m/%Y")
     prefix_text = f"[{topic['prefix']}] " if topic["prefix"] else ""
 
     msg = (
-        f"🔥 *FIRSAT ALARMI!* 🔥\n"
+        f"🔥 {bold}FIRSAT ALARMI!{bold} 🔥\n"
         f"━━━━━━━━━━━━━━━\n"
         f"{prefix_text}{topic['title']}\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -541,16 +547,16 @@ def main():
             print(f"          Kelime: {keyword}")
             print(f"          Link: {topic['url']}")
 
-            msg = format_notification(topic, keyword)
             results = []
 
             # WhatsApp gönder
             if has_whatsapp:
-                results.append(send_whatsapp(phone, apikey, msg))
+                results.append(send_whatsapp(phone, apikey, format_notification(topic, keyword)))
 
-            # Telegram yedek
+            # Telegram yedek. Düz metin kalıyor: MarkdownV2'de başlıktaki "*"
+            # ya da "_" mesajın reddedilmesine yol açar.
             if has_telegram:
-                results.append(send_telegram(tg_token, tg_chat, msg))
+                results.append(send_telegram(tg_token, tg_chat, format_notification(topic, keyword, bold="")))
 
             # Rate limit: CallMeBot için, Telegram da aynı sohbete art arda
             # gelen mesajlarda 429 dönüyor. Yalnızca WhatsApp'ta beklemek yetmiyordu.
