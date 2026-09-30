@@ -18,17 +18,10 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import quote, urlencode
 
-# Sayfa çekerken yakalanacak hatalar
-FETCH_ERRORS = (requests.RequestException,)
-
 # CloudFlare bypass
 try:
     import cloudscraper
-    from cloudscraper.exceptions import CloudflareException
     HAS_CLOUDSCRAPER = True
-    # Çözülemeyen challenge'da cloudscraper RequestException değil kendi
-    # hatasını fırlatıyor; yakalanmazsa HTML yedeğine düşmeden script çöküyor.
-    FETCH_ERRORS += (CloudflareException,)
 except ImportError:
     HAS_CLOUDSCRAPER = False
 
@@ -56,6 +49,8 @@ CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
 # Actions'ta workflow bunu "state" dalındaki kopyaya yönlendiriyor (SEEN_FILE);
 # main'e her tur bot commit'i düşmesin. Lokalde script'in yanındaki dosya.
 SEEN_FILE = os.environ.get("SEEN_FILE") or os.path.join(os.path.dirname(__file__), "seen_topics.json")
+# Art arda kaç turun sorunlu geçtiği; görülen konuların yanında duruyor.
+STATUS_FILE = os.path.join(os.path.dirname(SEEN_FILE), "scan_status.json")
 
 FORUM_URL = "https://forum.donanimarsivi.com/forumlar/Sicakfirsatlar/"
 # XenForo RSS feed - yedek. Forum şu an misafire 403 + giriş sayfası dönüyor,
@@ -84,6 +79,26 @@ SEEN_LIMIT = 500
 # Tur başına en fazla kaç bildirim gönderilsin. Fazlası görüldü işaretlenmez,
 # sonraki turda gider; CallMeBot limiti tek turda dolup gerçek bildirimler düşmesin.
 MAX_NOTIFICATIONS_PER_RUN = 10
+
+# Forum sayfası kaç kez denensin ve denemeler arasında kaç saniye beklensin.
+# Cloudflare arada bir tek istek için 403 ya da içeriksiz bir sayfa dönüyor.
+FETCH_ATTEMPTS = 3
+FETCH_RETRY_WAITS = (10, 30)
+
+# Bildirim bağlantı hatası, 429 ya da 5xx alırsa bir kez daha denensin.
+NOTIFY_ATTEMPTS = 2
+NOTIFY_RETRY_WAIT = 5
+
+# Bu kadar saniye geçince yeni bildirim başlatılmaz, kalanlar sonraki tura
+# kalır. Kanal yanıt vermezken her deneme 30 sn beklediği için 10 bildirim
+# workflow'un süre sınırını aşıyor, iş iptal edilince seen de kaydedilmiyordu.
+RUN_TIME_BUDGET = 6 * 60
+
+# Konu alınamayan ya da bildirimi gidemeyen tur, sorun art arda bu kadar tur
+# sürerse kırmızı biter. Tek turluk aksaklık (Cloudflare'in bir turluk 403'ü,
+# CallMeBot'un bir kez cevap vermemesi) sonraki turda düzeliyordu ama her
+# seferinde "failed" maili geliyordu.
+FAIL_AFTER_RUNS = 3
 
 # Sırlar yalnızca ortam değişkeninden (GitHub Secrets) okunuyor. Eski kurulumlarda
 # config.json'da kalmış olabilirler; uyarmak için isimleri tutuluyor.
@@ -118,20 +133,76 @@ def newest_ids(ids):
     return sorted({str(i) for i in ids if str(i).isdigit()}, key=int)[-SEEN_LIMIT:]
 
 
+def read_json(path, default):
+    """
+    JSON dosyasını oku. Yoksa ya da boşsa default döner (README kurulumda
+    seen_topics.json'u boş bırakmayı söylüyor). Bozuksa uyarıp default döner:
+    her turu çökertip elle düzeltilene kadar kırmızı kalmasın.
+    """
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+        return json.loads(content) if content else default
+    except (OSError, ValueError) as e:
+        print(f"[UYARI] {os.path.basename(path)} okunamadı ({e}), boş kabul ediliyor.")
+        return default
+
+
+def write_json(path, data):
+    """
+    Önce geçici dosyaya yaz, sonra yerine taşı: yazma yarıda kesilirse eski
+    dosya sağlam kalsın. Workflow .tmp dosyalarını commit'lemiyor.
+    """
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
 def load_seen():
     """Daha önce görülmüş konu ID'lerini yükle."""
-    if not os.path.exists(SEEN_FILE):
+    data = read_json(SEEN_FILE, [])
+    if not isinstance(data, list):
+        print(f"[UYARI] {os.path.basename(SEEN_FILE)} liste değil, boş kabul ediliyor.")
         return []
-    with open(SEEN_FILE, "r", encoding="utf-8") as f:
-        content = f.read().strip()
-    # README kurulumda dosyayı boş bırakmayı söylüyor, boş dosya json'u patlatmasın
-    return newest_ids(json.loads(content)) if content else []
+    return newest_ids(data)
 
 
 def save_seen(seen_list):
     """Görülmüş konu ID'lerini kaydet."""
-    with open(SEEN_FILE, "w", encoding="utf-8") as f:
-        json.dump(newest_ids(seen_list), f)
+    write_json(SEEN_FILE, newest_ids(seen_list))
+
+
+def load_failures():
+    """Art arda kaç turun sorunlu geçtiği."""
+    data = read_json(STATUS_FILE, {})
+    count = data.get("consecutive_failures", 0) if isinstance(data, dict) else 0
+    return count if isinstance(count, int) and count > 0 else 0
+
+
+def finish_run(problem=""):
+    """
+    Turu kapat, çıkış kodunu döndür. problem boşsa tur sorunsuz geçti.
+    Sorun FAIL_AFTER_RUNS tur art arda sürerse 1 döner (run kırmızı, mail
+    gelir); daha azsa uyarı basıp 0 döner. Sorunsuz tur sayacı sıfırlar.
+    """
+    failures = load_failures() + 1 if problem else 0
+    write_json(STATUS_FILE, {"consecutive_failures": failures})
+    if not problem:
+        return 0
+
+    if failures >= FAIL_AFTER_RUNS:
+        print(f"[HATA] {problem} Art arda {failures}. tur, run başarısız sayılıyor.")
+        return 1
+
+    print(f"[UYARI] {problem} Art arda {failures}. tur; "
+          f"{FAIL_AFTER_RUNS}. turda da sürerse run kırmızı biter.")
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        # Run yeşil kalıyor ama özet sayfasında uyarı olarak görünüyor
+        print(f"::warning title=Tarama sorunu ({failures}/{FAIL_AFTER_RUNS})::{problem}")
+    return 0
 
 
 def fetch_topics(pages=PAGES_TO_SCAN):
@@ -161,11 +232,12 @@ def fetch_via_rss(session):
     """
     print(f"[TARAMA] RSS feed: {RSS_URL}")
 
+    # Tek deneme: feed misafire kalıcı olarak 403, tekrar denemek boşa süre.
     try:
         resp = session.get(RSS_URL, headers=HEADERS, timeout=30)
         resp.raise_for_status()
-    except FETCH_ERRORS as e:
-        print(f"[HATA] RSS alınamadı: {e}")
+    except Exception as e:  # ağ hatası, HTTP hatası ya da cloudscraper challenge hatası
+        print(f"[HATA] RSS alınamadı: {type(e).__name__}: {e}")
         return []
 
     soup = BeautifulSoup(resp.text, "xml")
@@ -207,6 +279,45 @@ def fetch_via_rss(session):
     return topics
 
 
+def fetch_page(session, url):
+    """
+    Forum sayfasını çek, ana içerik sütununu döndür; alınamazsa None.
+    Cloudflare arada bir 403 ya da içeriksiz bir sayfa dönüyor ve çoğu zaman
+    kısa süre sonra geçiyor: FETCH_ATTEMPTS kez, aralarda bekleyerek dener.
+    """
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        if attempt > 1:
+            wait = FETCH_RETRY_WAITS[min(attempt - 2, len(FETCH_RETRY_WAITS) - 1)]
+            print(f"[BİLGİ] {wait} sn sonra tekrar deneniyor ({attempt}/{FETCH_ATTEMPTS})...")
+            time.sleep(wait)
+            # Engellenen oturumun çerezleriyle tekrar gitmesin
+            session.cookies.clear()
+
+        try:
+            resp = session.get(url, headers=HEADERS, timeout=30)
+            resp.raise_for_status()
+        except Exception as e:  # ağ hatası, HTTP hatası ya da cloudscraper challenge hatası
+            print(f"[HATA] Sayfa alınamadı: {type(e).__name__}: {e}")
+            continue
+
+        debug(f"Sayfa boyutu: {len(resp.text)} karakter")
+        debug(f"İlk 500 karakter:\n{resp.text[:500]}")
+        debug("─────────────────────────────")
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Yalnızca ana içerik sütunu. Kenar çubuğundaki "son konular" bloğu
+        # (li.block-row) başka forumların konularını listeliyor, üst menüde de
+        # /konu/ linkleri var; sayfanın tamamı taranınca fırsat diye bildiriliyorlardı.
+        content = soup.select_one("div.p-body-content")
+        if content is None:
+            print("[HATA] Ana içerik bulunamadı (Cloudflare sayfası ya da tema değişikliği).")
+            continue
+        return content
+
+    return None
+
+
 def fetch_via_html(session, pages=PAGES_TO_SCAN):
     """
     HTML scraping yöntemi (birincil).
@@ -222,26 +333,12 @@ def fetch_via_html(session, pages=PAGES_TO_SCAN):
         url = FORUM_URL if page_num == 1 else f"{FORUM_URL}page-{page_num}"
         print(f"[TARAMA] Sayfa {page_num}: {url}")
 
-        try:
-            resp = session.get(url, headers=HEADERS, timeout=30)
-            resp.raise_for_status()
-        except FETCH_ERRORS as e:
-            print(f"[HATA] Sayfa alınamadı: {e}")
-            continue
-
-        debug(f"Sayfa boyutu: {len(resp.text)} karakter")
-        debug(f"İlk 500 karakter:\n{resp.text[:500]}")
-        debug("─────────────────────────────")
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Yalnızca ana içerik sütunu. Kenar çubuğundaki "son konular" bloğu
-        # (li.block-row) başka forumların konularını listeliyor, üst menüde de
-        # /konu/ linkleri var; sayfanın tamamı taranınca fırsat diye bildiriliyorlardı.
-        content = soup.select_one("div.p-body-content")
+        content = fetch_page(session, url)
         if content is None:
-            print(f"[HATA] Sayfa {page_num}: ana içerik bulunamadı (Cloudflare sayfası ya da tema değişikliği).")
-            continue
+            # Denemeler tükendiyse engel sürüyor; sonraki sayfa da büyük
+            # ihtimalle aynı hatayı alır ve her biri dakikalarca bekletir.
+            print(f"[HATA] Sayfa {page_num} alınamadı, sonraki sayfalar atlanıyor.")
+            break
 
         thread_items = content.select("div.structItem")
         debug(f"div.structItem ile {len(thread_items)} öğe bulundu")
@@ -371,6 +468,27 @@ def redact(text, *secrets):
     return text
 
 
+def is_transient(status_code):
+    """Tekrar denemeye değer HTTP hatası mı: hız sınırı ya da sunucu tarafı."""
+    return status_code == 429 or status_code >= 500
+
+
+def send_with_retry(label, send_once):
+    """
+    send_once() (başarılı_mı, geçici_mi) döndürür. Geçici hatada (bağlantı,
+    429, 5xx) NOTIFY_RETRY_WAIT sn bekleyip NOTIFY_ATTEMPTS'e kadar dener;
+    yoksa bildirim ancak birkaç saat sonraki turda tekrar denenirdi.
+    """
+    for attempt in range(1, NOTIFY_ATTEMPTS + 1):
+        if attempt > 1:
+            print(f"[{label}] {NOTIFY_RETRY_WAIT} sn sonra tekrar deneniyor...")
+            time.sleep(NOTIFY_RETRY_WAIT)
+        ok, transient = send_once()
+        if ok or not transient:
+            return ok
+    return False
+
+
 def send_whatsapp(phone, apikey, message):
     """CallMeBot API ile WhatsApp mesajı gönder."""
     # Tüm parametreler encode ediliyor: "+905..." gibi bir numaradaki "+"
@@ -381,22 +499,24 @@ def send_whatsapp(phone, apikey, message):
 
     print("[WHATSAPP] Mesaj gönderiliyor...")
 
-    try:
-        resp = requests.get(url, timeout=30)
+    def send_once():
+        try:
+            resp = requests.get(url, timeout=30)
+        except requests.RequestException as e:
+            # Bağlantı hatalarının mesajı istek URL'sini (numara + apikey) içeriyor
+            print(f"[WHATSAPP] ❌ Bağlantı hatası: {redact(str(e), *secrets)}")
+            return False, True
         if resp.status_code == 200:
             print("[WHATSAPP] ✅ Mesaj gönderildi!")
-            return True
-        else:
-            # Hata gövdesi HTML: önce numarayı ve mesajın tamamını yansıtıyor,
-            # sebep ("APIKey is invalid" vb.) en sonda. Baştan kırpınca sebep
-            # kayboluyor, numara loga düşüyordu.
-            body = " ".join(re.sub(r"<[^>]+>", " ", resp.text).split())
-            print(f"[WHATSAPP] ❌ Hata: {resp.status_code} - {redact(body, *secrets)[-200:]}")
-            return False
-    except requests.RequestException as e:
-        # Bağlantı hatalarının mesajı istek URL'sini (numara + apikey) içeriyor
-        print(f"[WHATSAPP] ❌ Bağlantı hatası: {redact(str(e), *secrets)}")
-        return False
+            return True, False
+        # Hata gövdesi HTML: önce numarayı ve mesajın tamamını yansıtıyor,
+        # sebep ("APIKey is invalid" vb.) en sonda. Baştan kırpınca sebep
+        # kayboluyor, numara loga düşüyordu.
+        body = " ".join(re.sub(r"<[^>]+>", " ", resp.text).split())
+        print(f"[WHATSAPP] ❌ Hata: {resp.status_code} - {redact(body, *secrets)[-200:]}")
+        return False, is_transient(resp.status_code)
+
+    return send_with_retry("WHATSAPP", send_once)
 
 
 def send_telegram(bot_token, chat_id, message):
@@ -406,18 +526,20 @@ def send_telegram(bot_token, chat_id, message):
     # Telegram'da "can't parse entities" (400) hatasına yol açıyordu.
     data = {"chat_id": chat_id, "text": message}
 
-    try:
-        resp = requests.post(url, data=data, timeout=30)
+    def send_once():
+        try:
+            resp = requests.post(url, data=data, timeout=30)
+        except requests.RequestException as e:
+            # Bağlantı hatalarının mesajı token'lı URL'yi içeriyor
+            print(f"[TELEGRAM] ❌ Bağlantı hatası: {redact(str(e), bot_token)}")
+            return False, True
         if resp.status_code == 200:
             print("[TELEGRAM] ✅ Mesaj gönderildi!")
-            return True
-        else:
-            print(f"[TELEGRAM] ❌ Hata: {resp.status_code} - {resp.text[:200]}")
-            return False
-    except requests.RequestException as e:
-        # Bağlantı hatalarının mesajı token'lı URL'yi içeriyor
-        print(f"[TELEGRAM] ❌ Bağlantı hatası: {redact(str(e), bot_token)}")
-        return False
+            return True, False
+        print(f"[TELEGRAM] ❌ Hata: {resp.status_code} - {resp.text[:200]}")
+        return False, is_transient(resp.status_code)
+
+    return send_with_retry("TELEGRAM", send_once)
 
 
 def format_notification(topic, matched_keyword, bold="*"):
@@ -442,6 +564,7 @@ def format_notification(topic, matched_keyword, bold="*"):
 
 
 def main():
+    started = time.monotonic()
     print("=" * 60)
     print("  Donanım Arşivi - Sıcak Fırsatlar Takipçisi")
     print(f"  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
@@ -511,14 +634,14 @@ def main():
 
     if not topics:
         # Forumda her zaman konu var; hiç gelmediyse RSS de HTML de engellendi
-        # ya da site yapısı değişti. Run kırmızı olsun ki sessizce körleşmeyelim.
-        print("[HATA] Hiç konu alınamadı, tarama başarısız.")
-        return 1
+        # ya da site yapısı değişti. Seen'e dokunulmuyor, sonraki tur baştan dener.
+        return finish_run("Hiç konu alınamadı (forum erişimi engelledi ya da site yapısı değişti).")
 
     # ── Eşleştirme ve bildirim ──
     new_matches = 0
     failed = 0
     deferred = 0
+    late = 0
     silenced = 0
     # Tarama sırasında yeni mesaj alan konu sayfa 1'den 2'ye kayıp iki kez
     # gelebiliyor; gönderilemeyen ya da ertelenen konu seen'e girmediği için
@@ -537,9 +660,12 @@ def main():
         if matched and bootstrap:
             silenced += 1
         elif matched:
+            # İkisinde de görüldü işaretleme, sonraki turda gönderilsin
             if new_matches >= MAX_NOTIFICATIONS_PER_RUN:
-                # Görüldü işaretleme, sonraki turda gönderilsin
                 deferred += 1
+                continue
+            if time.monotonic() - started > RUN_TIME_BUDGET:
+                late += 1
                 continue
 
             new_matches += 1
@@ -587,11 +713,14 @@ def main():
     if deferred:
         print(f"  Tur sınırı ({MAX_NOTIFICATIONS_PER_RUN}) doldu, "
               f"{deferred} eşleşme sonraki taramaya kaldı.")
+    if late:
+        print(f"  Süre sınırı ({RUN_TIME_BUDGET // 60} dk) doldu, "
+              f"{late} eşleşme sonraki taramaya kaldı.")
     print(f"{'=' * 60}")
 
     # Geçersiz/iptal edilmiş API key'de her tur yeşil biter ve kimse fark
-    # etmezdi. Run kırmızı olsun; seen yine de kaydedildi, workflow commit'liyor.
-    return 1 if failed else 0
+    # etmezdi; sorun sürerse run kırmızı olsun. Seen yine de kaydedildi.
+    return finish_run(f"{failed} bildirim hiçbir kanaldan gönderilemedi." if failed else "")
 
 
 if __name__ == "__main__":

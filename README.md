@@ -20,7 +20,7 @@ Her 30 dakikada bir:
      (bildirim hiçbir kanaldan gidemezse konu bir sonraki taramada tekrar denenir)
 ```
 
-> **Görülen konular nerede?** Actions'ta `seen_topics.json` `main`'de değil, ayrı bir `state` dalında tutulur. Böylece her taramada `main`'e bot commit'i düşmez, commit geçmişi yalnızca gerçek değişiklikleri gösterir. `state` dalı ilk taramada kendiliğinden oluşur ve başlangıç listesi olarak `main`'deki `seen_topics.json`'ı alır; dal oluştuktan sonra `main`'deki kopya kullanılmaz. Lokalde çalıştırınca script'in yanındaki `seen_topics.json` kullanılır.
+> **Görülen konular nerede?** Actions'ta `seen_topics.json` `main`'de değil, ayrı bir `state` dalında tutulur (yanında art arda sorunlu tur sayısını tutan `scan_status.json` da orada). Böylece her taramada `main`'e bot commit'i düşmez, commit geçmişi yalnızca gerçek değişiklikleri gösterir. `state` dalı ilk taramada kendiliğinden oluşur ve başlangıç listesi olarak `main`'deki `seen_topics.json`'ı alır; dal oluştuktan sonra `main`'deki kopya kullanılmaz. Lokalde çalıştırınca script'in yanındaki `seen_topics.json` kullanılır.
 
 > **İlk çalıştırma:** `seen_topics.json` boşken bot forumdaki mevcut konuları sadece "görüldü" olarak işaretler, bildirim göndermez. Aksi halde kurulumda onlarca mesaj gelir ve CallMeBot limiti dolar. Bildirimler ikinci taramadan itibaren, yeni açılan konular için başlar.
 
@@ -167,7 +167,7 @@ CallMeBot bazen yavaş olabiliyor. Yedek olarak Telegram da ekleyebilirsin:
 
 **S: Tarama sıklığını değiştirebilir miyim?**
 `.github/workflows/tracker.yml` dosyasındaki cron satırını düzenle:
-- `*/30 * * * *` → Her 30 dakika (varsayılan)
+- `17,47 * * * *` → Her 30 dakika (varsayılan). Saat başı ve buçuk GitHub'ın en yoğun anı; oraya denk gelen turlar gecikiyor ya da hiç çalışmıyor, o yüzden dakikalar kaydırıldı. GitHub zamanlamayı yine de garanti etmez, yoğunlukta turlar gecikebilir.
 - `*/10 * * * *` → Her 10 dakika
 - `*/15 * * * *` → Her 15 dakika
 - `*/5 * * * *` → Her 5 dakika (daha hızlı ama daha fazla Actions dakikası yer)
@@ -175,11 +175,16 @@ CallMeBot bazen yavaş olabiliyor. Yedek olarak Telegram da ekleyebilirsin:
 **S: Çok fazla bildirim geliyor!**
 `config.json`'daki genel kelimeleri (SSD, RAM, GPU gibi) kaldır, sadece spesifik model numaraları bırak.
 
-**S: Actions'ta run kırmızı (failed) görünüyor?**
-Bot sessizce körleşmesin diye şu durumlarda bilerek hata verir, logda sebebi yazar:
-- **Forumdan hiç konu alınamadı** (Cloudflare engeli, site yapısı değişikliği vb.). Arada bir olursa sorun yok; sürekli oluyorsa aşağıdaki gibi debug logu aç.
-- **Bildirim hiçbir kanaldan gönderilemedi.** Konu bir sonraki taramada tekrar denenir. Sürekli oluyorsa logdaki `[WHATSAPP] ❌ Hata` satırına bak: çoğunlukla API key geçersizdir, CallMeBot'tan yenisini al.
+**S: Actions'ta run kırmızı (failed) görünüyor / "failed" maili geldi?**
+Geçici aksaklıklar run'ı kırmızı yapmaz. Forum sayfası 403 ya da içeriksiz dönerse (Cloudflare) bot 10 ve 30 saniye arayla 3 kez dener; bildirim bağlantı hatası, 429 ya da 5xx alırsa bir kez daha dener. Yine olmazsa tur yeşil biter, run özetinde sarı bir uyarı görünür ve konu sonraki taramada tekrar denenir.
+
+Run ancak şu durumlarda kırmızı olur, logda sebebi yazar:
+- **Aynı sorun art arda 3 taramada sürdü** (`tracker.py`'deki `FAIL_AFTER_RUNS`): forumdan hiç konu alınamıyor (kalıcı Cloudflare engeli, site yapısı değişikliği; aşağıdaki gibi debug logu aç) ya da bildirim hiçbir kanaldan gidemiyor (çoğunlukla API key geçersizdir: logdaki `[WHATSAPP] ❌ Hata` satırına bak, CallMeBot'tan yenisini al). Sayaç `state` dalındaki `scan_status.json`'da tutulur, sorunsuz ilk turda sıfırlanır.
 - **Bildirim kanalı tanımlı değil.** Secrets eksik ya da adı yanlış yazılmış (adım 4).
+- **Anahtar kelime listesi boş.** `config.json`'daki `keywords` listesine bak.
+
+**S: Bot bir süre sonra kendiliğinden durdu?**
+GitHub, public repolarda 60 gün aktivite olmazsa zamanlanmış workflow'ları kapatır. Bot commit'leri `state` dalına gittiği için aktivite sayılmıyor; bu yüzden workflow her turun sonunda kendini API ile yeniden etkinleştiriyor (**Keep schedule alive** adımı). Yine de kapanırsa: **Actions** → **Fırsat Takipçisi** → **Enable workflow**.
 
 **S: Tarama çalışıyor ama konu bulamıyor, nasıl debug ederim?**
 Debug çıktıları (sayfa boyutu, HTML'in ilk 500 karakteri, selector sonuçları) varsayılan olarak kapalı. Açmak için:

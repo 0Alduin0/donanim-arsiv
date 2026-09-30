@@ -1,15 +1,19 @@
 name: Fırsat Takipçisi
 
 on:
-  # Her 30 dakikada bir çalış
+  # Her 30 dakikada bir çalış. Saat başı ve buçuk GitHub'ın en yoğun anı;
+  # */30 oraya denk geldiği için turların çoğu gecikiyor ya da hiç
+  # çalışmıyordu (günde ~5 tur). Yoğun olmayan dakikalar seçildi.
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '17,47 * * * *'
   
   # Manuel tetikleme
   workflow_dispatch:
 
 permissions:
   contents: write
+  # "Keep schedule alive" adımı workflow'u API ile yeniden etkinleştiriyor
+  actions: write
 
 # Aynı anda iki tarama (cron + manuel) aynı konuları iki kez bildirip
 # seen_topics.json push'unda çakışmasın; sıradaki beklesin.
@@ -20,7 +24,9 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Tracker yeni bildirim başlatmayı 6 dakikada kesiyor; kalan pay kurulum,
+    # son bildirim ve kayıt için. Süre aşılırsa iş iptal olur, seen kaydedilmez.
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repo
@@ -34,10 +40,15 @@ jobs:
         run: |
           # ls-remote: 0 dal var, 2 dal yok, başka kod erişim hatası. Hatayı "dal
           # yok" sanıp main'deki eski listeyle başlarsak aynı konular yeniden bildirilir.
-          status=0
-          git ls-remote --exit-code --heads origin state > /dev/null || status=$?
+          # Erişim hatası anlık bir ağ sorunu olabilir, 3 kez denenir.
+          for i in 1 2 3; do
+            status=0
+            git ls-remote --exit-code --heads origin state > /dev/null || status=$?
+            if [ "$status" -eq 0 ] || [ "$status" -eq 2 ] || [ "$i" -eq 3 ]; then break; fi
+            sleep $((i * 10))
+          done
           if [ "$status" -eq 0 ]; then
-            git fetch --depth=1 origin state
+            git fetch --depth=1 origin state || { sleep 10; git fetch --depth=1 origin state; }
             git worktree add -B state state FETCH_HEAD
           elif [ "$status" -eq 2 ]; then
             # İlk tur: dalı main'deki son seen_topics.json ile başlat
@@ -55,8 +66,9 @@ jobs:
         with:
           python-version: '3.11'
 
+      # PyPI'daki anlık bir aksaklık taramayı kırmızı yapmasın
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt || { sleep 15; pip install -r requirements.txt; }
 
       - name: Run tracker
         env:
@@ -67,19 +79,34 @@ jobs:
           SEEN_FILE: state/seen_topics.json
         run: python tracker.py
 
-      # seen_topics.json'u state dalına commit et ki aynı konuyu tekrar bildirmesin.
-      # Tracker bir bildirim gönderemeyince de kırmızı çıkıyor; o turda başarıyla
-      # gidenler yine kaydedilmeli, yoksa sonraki turda tekrar gönderilirler.
-      # Tarama hiç yapılamadıysa dosya değişmez, commit atılmaz.
+      # seen_topics.json'u ve scan_status.json'u (art arda sorunlu tur sayısı)
+      # state dalına commit et ki aynı konu tekrar bildirilmesin. Tracker kırmızı
+      # bittiğinde de çalışır: o turda başarıyla gidenler kaydedilmeli, yoksa
+      # sonraki turda tekrar gönderilirler. Değişiklik yoksa commit atılmaz.
       # state dalına yalnızca bu workflow yazıyor ve concurrency aynı anda tek tur
-      # çalıştırıyor; main'e gelen commit'ler artık push'u reddettirmiyor.
+      # çalıştırıyor; main'e gelen commit'ler push'u reddettirmiyor.
       - name: Save seen topics
         if: ${{ !cancelled() && steps.state.outcome == 'success' }}
         working-directory: state
         run: |
           git config --global user.name "Firsat Bot"
           git config --global user.email "bot@tracker.local"
-          git add -A
+          # Yarıda kalmış bir yazmanın .tmp dosyası commit'lenmesin
+          git add -A -- . ':!*.tmp'
           git diff --staged --quiet && exit 0
           git commit -qm "update seen topics [skip ci]"
-          git push origin state
+          # Push anlık bir ağ hatasıyla düşerse bu turda gidenler sonraki turda
+          # tekrar bildirilirdi; bekleyip yeniden denenir.
+          git push origin state || { sleep 10; git push origin state; } || { sleep 30; git push origin state; }
+
+      # Public repoda 60 gün aktivite olmazsa GitHub zamanlanmış workflow'u
+      # kapatıyor ve bot sessizce durur. state dalına giden bot commit'leri
+      # aktivite sayılmıyor; workflow'u API ile yeniden etkinleştirmek bu sayacı
+      # sıfırlıyor. Olmazsa taramayı kırmızı yapmasın, uyarı bıraksın.
+      - name: Keep schedule alive
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X PUT "repos/${{ github.repository }}/actions/workflows/tracker.yml/enable" \
+            || echo "::warning::Zamanlanmış çalışma canlı tutulamadı; 60 gün aktivite olmazsa GitHub kapatabilir."
